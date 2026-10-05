@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.ServiceProcess;
+
 using System.Text.Json;
 namespace TclTvWake;
 internal static class Program
@@ -13,9 +13,11 @@ internal static class Program
             if (args.Contains("--list-displays")) { Console.WriteLine(JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
             var config = JsonSerializer.Deserialize<Config>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "appsettings.json")), Json)!;
             if (string.IsNullOrWhiteSpace(config.MonitorId) || config.Attempts < 1 || config.RetrySeconds < 1 || config.WakeDelaySeconds < 0) throw new Exception("Invalid configuration");
+            if (args.Contains("--home-if-hdmi1")) { using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)); return await new Controller(config).HomeIfHdmi1(deadline.Token) ? 0 : 1; }
+            if (args.Contains("--home-sleep-budget")) { using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500)); return await new Controller(config).HomeIfHdmi1(deadline.Token) ? 0 : 1; }
             if (args.Contains("--once")) return await new Controller(config).Wake(CancellationToken.None) ? 0 : 1;
-            if (args.Contains("--service")) { ServiceBase.Run(new TvService(config)); return 0; }
-            Console.WriteLine("Options: --list-displays | --once | --service"); return 0;
+            if (args.Contains("--service")) { new TvService(config).Run(); return 0; }
+            Console.WriteLine("Options: --list-displays | --once | --home-if-hdmi1 | --service"); return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
     }
@@ -85,8 +87,38 @@ internal sealed class Controller(Config config)
         }
         finally { gate.Release(); }
     }
+    internal async Task<bool> HomeIfHdmi1(CancellationToken ct)
+    {
+        try
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                if (!await Active(ct))
+                { Log("Home skipped: TV is not an active Windows display; no ADB commands sent."); return false; }
+                await Adb(ct, "connect", config.Endpoint);
+                var power = await Adb(ct, "-s", config.Endpoint, "shell", "dumpsys", "power");
+                if (!power.Contains("mWakefulness=Awake") || !power.Contains("Display Power: state=ON"))
+                { Log("Home skipped: TV is not awake / ON."); return false; }
+                var dump = await Adb(ct, "-s", config.Endpoint, "shell", "dumpsys", "tv_input");
+                var input = TvInputState.CurrentInput(dump);
+                const string prefix = "content://android.media.tv/passthrough/";
+                if (!config.HdmiUri.StartsWith(prefix, StringComparison.Ordinal)) throw new Exception("Invalid HDMI URI.");
+                var expected = Uri.UnescapeDataString(config.HdmiUri[prefix.Length..]);
+                if (input != expected) { Log("Home skipped: current input is " + (input ?? "unknown / no main session") + "."); return false; }
+                if (!await Active(ct))
+                { Log("Home skipped: TV display became inactive before Home."); return false; }
+                await Adb(ct, "-s", config.Endpoint, "shell", "input", "keyevent", "KEYCODE_HOME");
+                Log("HDMI1 main session confirmed; Home command delivered."); return true;
+            }
+            finally { gate.Release(); }
+        }
+        catch (OperationCanceledException) { Log("Home skipped/interrupted: deadline or cancellation."); return false; }
+        catch (Exception ex) { Log("Home failed: " + ex.Message); return false; }
+    }
     private async Task<string> Adb(CancellationToken ct, params string[] args)
     {
+        ct.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(Path.GetFullPath(config.AdbPath, AppContext.BaseDirectory)) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.Environment["ADB_VENDOR_KEYS"] = Path.Combine(AppContext.BaseDirectory, "keys");
         start.ArgumentList.Add("-P"); start.ArgumentList.Add("5038");
@@ -99,29 +131,4 @@ internal sealed class Controller(Config config)
         var output = await stdout + "\n" + await stderr;
         if (process.ExitCode != 0) throw new Exception("ADB: " + output.Trim()); return output;
     }
-}
-internal sealed class TvService : ServiceBase
-{
-    private readonly Controller controller;
-    private readonly CancellationTokenSource stopping = new();
-    private Task work = Task.CompletedTask;
-    private long lastTrigger;
-    public TvService(Config config) { ServiceName = "TclTvWake"; CanHandlePowerEvent = true; CanShutdown = true; AutoLog = false; controller = new(config); }
-    protected override void OnStart(string[] args) => Trigger("Service startup");
-    protected override bool OnPowerEvent(PowerBroadcastStatus status)
-    {
-        if (status is PowerBroadcastStatus.ResumeAutomatic or PowerBroadcastStatus.ResumeSuspend or PowerBroadcastStatus.ResumeCritical) Trigger("Resume: " + status);
-        return true;
-    }
-    private void Trigger(string reason)
-    {
-        var now = Environment.TickCount64;
-        if (lastTrigger != 0 && now - lastTrigger < 5000) return;
-        lastTrigger = now;
-        Controller.Log(reason);
-        if (!work.IsCompleted) return;
-        work = Task.Run(async () => { try { await controller.Wake(stopping.Token); } catch (OperationCanceledException) { } catch (Exception ex) { Controller.Log(ex.ToString()); } });
-    }
-    protected override void OnStop() { stopping.Cancel(); try { work.Wait(TimeSpan.FromSeconds(20)); } catch (AggregateException) { } }
-    protected override void OnShutdown() => OnStop();
 }

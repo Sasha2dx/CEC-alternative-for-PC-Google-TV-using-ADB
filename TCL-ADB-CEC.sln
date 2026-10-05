@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TclTvWake", "TclTvWake\TclTvWake.csproj", "{F5EA9058-BE46-4156-BC23-BA4392E542DA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests", "Tests\Tests.csproj", "{873F4311-7E5F-493C-8CD1-8400B31F214F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,18 @@ Global
 		{F5EA9058-BE46-4156-BC23-BA4392E542DA}.Release|x64.Build.0 = Release|Any CPU
 		{F5EA9058-BE46-4156-BC23-BA4392E542DA}.Release|x86.ActiveCfg = Release|Any CPU
 		{F5EA9058-BE46-4156-BC23-BA4392E542DA}.Release|x86.Build.0 = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|x64.Build.0 = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Debug|x86.Build.0 = Debug|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|x64.ActiveCfg = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|x64.Build.0 = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|x86.ActiveCfg = Release|Any CPU
+		{873F4311-7E5F-493C-8CD1-8400B31F214F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
