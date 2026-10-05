@@ -10,6 +10,10 @@ internal sealed class TvService
     private readonly ManualResetEventSlim ended = new();
     private CancellationTokenSource wakeCancellation = new();
     private Task wake = Task.CompletedTask;
+    private readonly CancellationTokenSource monitorCancellation = new();
+    private readonly DisplayTransition displayTransition = new();
+    private Task monitor = Task.CompletedTask;
+    private long displayEpoch;
     private bool stopping;
     private bool suspended;
     private long lastResume;
@@ -39,7 +43,9 @@ internal sealed class TvService
         {
             statusHandle = RegisterServiceCtrlHandlerEx(Name, controlCallback, IntPtr.Zero);
             if (statusHandle == IntPtr.Zero) { Controller.Log("Register handler failed: " + Marshal.GetLastWin32Error()); return; }
-            Report(2, 5000); Report(4); TriggerWake("Service startup"); ended.Wait();
+            Report(2, 5000); Report(4); TriggerWake("Service startup");
+            monitor = Task.Run(MonitorDisplays);
+            ended.Wait();
         }
         catch (Exception ex) { Controller.Log(ex.ToString()); if (statusHandle != IntPtr.Zero) Report(1, error: 1064); }
     }
@@ -69,6 +75,7 @@ internal sealed class TvService
             var now = Environment.TickCount64;
             if (!suspended && lastResume != 0 && now - lastResume < 5000) return;
             suspended = false; lastResume = now;
+            displayEpoch++; displayTransition.Reset();
             CancelWake();
             var previous = wake;
             var cancellation = new CancellationTokenSource(); wakeCancellation = cancellation;
@@ -88,6 +95,7 @@ internal sealed class TvService
         {
             if (stopping || suspended) return;
             suspended = true;
+            displayEpoch++; displayTransition.Reset();
             CancelWake();
         }
         Controller.Log("Suspend: checking HDMI1 before sleep (1500 ms budget).");
@@ -101,12 +109,69 @@ internal sealed class TvService
     {
         try { wakeCancellation.Cancel(); } catch (ObjectDisposedException) { }
     }
+    private async Task MonitorDisplays()
+    {
+        var initialized = false;
+        while (!monitorCancellation.IsCancellationRequested)
+        {
+            try
+            {
+                long epoch;
+                lock (sync) { epoch = displayEpoch; }
+                var active = await controller.Active(monitorCancellation.Token, watchChanges: initialized);
+                initialized = true;
+                lock (sync)
+                {
+                    if (stopping) return;
+                    if (suspended || epoch != displayEpoch) continue;
+                    var changed = displayTransition.Observe(active);
+                    if (changed.HasValue) DisplayChanged(changed.Value);
+                }
+            }
+            catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested) { return; }
+            catch (Exception ex)
+            {
+                Controller.Log("Display observation failed; preserving previous state: " + ex.Message);
+                try { await Task.Delay(3000, monitorCancellation.Token); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+    }
+    private void DisplayChanged(bool active)
+    {
+        // Called under sync: serialize actions and cancel stale requests when
+        // the user reverses a display change, sleeps, or shuts down.
+        CancelWake();
+        var previous = wake;
+        var cancellation = new CancellationTokenSource(); wakeCancellation = cancellation;
+        Controller.Log(active ? "Display transition: inactive -> active; requesting HDMI1."
+            : "Display transition: active -> inactive; checking HDMI1 before Home.");
+        wake = Task.Run(async () =>
+        {
+            try
+            {
+                await previous;
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (active) await controller.Wake(cancellation.Token);
+                else
+                {
+                    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+                    deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                    await controller.HomeIfHdmi1(deadline.Token, afterDeactivation: true);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Controller.Log("Display action: " + ex); }
+            finally { cancellation.Dispose(); }
+        });
+    }
     private void BeginStop(bool home)
     {
         lock (sync)
         {
             if (stopping) return;
             stopping = true; CancelWake();
+            monitorCancellation.Cancel();
             Report(3, 15000);
         }
         _ = Task.Run(async () =>
@@ -120,6 +185,7 @@ internal sealed class TvService
                     await controller.HomeIfHdmi1(deadline.Token);
                 }
                 await wake.WaitAsync(TimeSpan.FromSeconds(3));
+                await monitor.WaitAsync(TimeSpan.FromSeconds(3));
             }
             catch (Exception ex) { Controller.Log("Stopping: " + ex.Message); }
             finally { Report(1); ended.Set(); }

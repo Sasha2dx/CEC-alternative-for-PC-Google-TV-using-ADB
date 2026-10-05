@@ -10,6 +10,7 @@ internal static class Program
         try
         {
             if (args.Length == 2 && args[0] == "--probe") { File.WriteAllText(args[1], JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
+            if (args.Length == 2 && args[0] == "--watch-change") { DisplayNotification.Wait(); File.WriteAllText(args[1], JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
             if (args.Contains("--list-displays")) { Console.WriteLine(JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
             var config = JsonSerializer.Deserialize<Config>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "appsettings.json")), Json)!;
             if (string.IsNullOrWhiteSpace(config.MonitorId) || config.Attempts < 1 || config.RetrySeconds < 1 || config.WakeDelaySeconds < 0) throw new Exception("Invalid configuration");
@@ -51,9 +52,9 @@ internal sealed class Controller(Config config)
             }
         } catch { }
     }
-    private async Task<bool> Active(CancellationToken ct)
+    internal async Task<bool> Active(CancellationToken ct, bool watchChanges = false)
     {
-        var monitors = Process.GetCurrentProcess().SessionId == 0 ? await ConsoleProbe.Read(ct) : Displays.Read();
+        var monitors = Process.GetCurrentProcess().SessionId == 0 ? await ConsoleProbe.Read(ct, watchChanges) : Displays.Read();
         return monitors.Any(m => m.Active && m.Id.StartsWith(config.MonitorId + "\\", StringComparison.OrdinalIgnoreCase));
     }
     internal async Task<bool> Wake(CancellationToken ct)
@@ -87,15 +88,16 @@ internal sealed class Controller(Config config)
         }
         finally { gate.Release(); }
     }
-    internal async Task<bool> HomeIfHdmi1(CancellationToken ct)
+    internal async Task<bool> HomeIfHdmi1(CancellationToken ct, bool afterDeactivation = false)
     {
         try
         {
             await gate.WaitAsync(ct);
             try
             {
-                if (!await Active(ct))
-                { Log("Home skipped: TV is not an active Windows display; no ADB commands sent."); return false; }
+                if (await Active(ct) == afterDeactivation)
+                { Log(afterDeactivation ? "Home skipped: TV became active again; no ADB commands sent."
+                    : "Home skipped: TV is not an active Windows display; no ADB commands sent."); return false; }
                 await Adb(ct, "connect", config.Endpoint);
                 var power = await Adb(ct, "-s", config.Endpoint, "shell", "dumpsys", "power");
                 if (!power.Contains("mWakefulness=Awake") || !power.Contains("Display Power: state=ON"))
@@ -106,8 +108,8 @@ internal sealed class Controller(Config config)
                 if (!config.HdmiUri.StartsWith(prefix, StringComparison.Ordinal)) throw new Exception("Invalid HDMI URI.");
                 var expected = Uri.UnescapeDataString(config.HdmiUri[prefix.Length..]);
                 if (input != expected) { Log("Home skipped: current input is " + (input ?? "unknown / no main session") + "."); return false; }
-                if (!await Active(ct))
-                { Log("Home skipped: TV display became inactive before Home."); return false; }
+                if (await Active(ct) == afterDeactivation)
+                { Log("Home skipped: TV display state changed before Home."); return false; }
                 await Adb(ct, "-s", config.Endpoint, "shell", "input", "keyevent", "KEYCODE_HOME");
                 Log("HDMI1 main session confirmed; Home command delivered."); return true;
             }

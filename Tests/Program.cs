@@ -21,3 +21,13 @@ foreach (var test in cases) {
     if (actual != test.Expected) throw new Exception($"{test.Name}: expected {test.Expected ?? "null"}, got {actual ?? "null"}");
     Console.WriteLine("PASS " + test.Name);
 }
+var transitions = new DisplayTransition();
+void Check(bool? actual, bool? expected, string name) { if (actual != expected) throw new Exception(name); Console.WriteLine("PASS " + name); }
+Check(transitions.Observe(false), null, "Initial inactive is baseline, not Home");
+Check(transitions.Observe(false), null, "Repeated inactive ignored");
+Check(transitions.Observe(true), true, "Activation detected");
+Check(transitions.Observe(true), null, "Repeated active ignored");
+Check(transitions.Observe(false), false, "Deactivation detected");
+Check(transitions.Observe(true), true, "Rapid reversal detected");
+transitions.Reset();
+Check(transitions.Observe(false), null, "Sleep/resume reset suppresses stale transition");

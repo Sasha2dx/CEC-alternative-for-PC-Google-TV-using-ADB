@@ -55,7 +55,7 @@ internal static class ConsoleProbe
         public ushort Show, ReservedSize; public IntPtr ReservedPointer, Input, Output, Error;
     }
     [StructLayout(LayoutKind.Sequential)] private struct ProcessInfo { public IntPtr Process, Thread; public uint Id, ThreadId; }
-    internal static async Task<MonitorInfo[]> Read(CancellationToken ct)
+    internal static async Task<MonitorInfo[]> Read(CancellationToken ct, bool watchChanges = false)
     {
         var session = WTSGetActiveConsoleSessionId();
         if (session == uint.MaxValue) throw new Exception("No physical console session yet");
@@ -73,7 +73,8 @@ internal static class ConsoleProbe
             if (!DuplicateTokenEx(token, 0x02000000, IntPtr.Zero, 2, 1, out duplicate)) throw new Win32Exception();
             var executable = Environment.ProcessPath!;
             var startup = new Startup { Size = Marshal.SizeOf<Startup>(), Desktop = @"winsta0\default" };
-            if (!CreateProcessAsUser(duplicate, executable, new StringBuilder($"\"{executable}\" --probe \"{path}\""), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, AppContext.BaseDirectory, ref startup, out var child)) throw new Win32Exception();
+            var operation = watchChanges ? "--watch-change" : "--probe";
+            if (!CreateProcessAsUser(duplicate, executable, new StringBuilder($"\"{executable}\" {operation} \"{path}\""), IntPtr.Zero, IntPtr.Zero, false, 0x08000000, IntPtr.Zero, AppContext.BaseDirectory, ref startup, out var child)) throw new Win32Exception();
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(10));
