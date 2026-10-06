@@ -13,7 +13,7 @@ internal static class Program
             if (args.Length == 2 && args[0] == "--watch-change") { DisplayNotification.Wait(); File.WriteAllText(args[1], JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
             if (args.Contains("--list-displays")) { Console.WriteLine(JsonSerializer.Serialize(Displays.Read(), Json)); return 0; }
             var config = JsonSerializer.Deserialize<Config>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "appsettings.json")), Json)!;
-            if (string.IsNullOrWhiteSpace(config.MonitorId) || config.Attempts < 1 || config.RetrySeconds < 1 || config.WakeDelaySeconds < 0) throw new Exception("Invalid configuration");
+            config.Validate();
             if (args.Contains("--home-if-hdmi1")) { using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)); return await new Controller(config).HomeIfHdmi1(deadline.Token) ? 0 : 1; }
             if (args.Contains("--home-sleep-budget")) { using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500)); return await new Controller(config).HomeIfHdmi1(deadline.Token) ? 0 : 1; }
             if (args.Contains("--once")) return await new Controller(config).Wake(CancellationToken.None) ? 0 : 1;
@@ -22,16 +22,6 @@ internal static class Program
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
     }
-}
-internal sealed class Config
-{
-    public string AdbPath { get; set; } = "adb/adb.exe";
-    public string Endpoint { get; set; } = "192.168.1.95:5555";
-    public string MonitorId { get; set; } = @"MONITOR\XXX9615";
-    public string HdmiUri { get; set; } = "content://android.media.tv/passthrough/com.tcl.tvinput%2F.passthroughinput.TvPassThroughService%2FHW1413744128";
-    public int Attempts { get; set; } = 12;
-    public int RetrySeconds { get; set; } = 5;
-    public int WakeDelaySeconds { get; set; } = 3;
 }
 internal sealed class Controller(Config config)
 {
@@ -123,11 +113,11 @@ internal sealed class Controller(Config config)
         ct.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(Path.GetFullPath(config.AdbPath, AppContext.BaseDirectory)) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.Environment["ADB_VENDOR_KEYS"] = Path.Combine(AppContext.BaseDirectory, "keys");
-        start.ArgumentList.Add("-P"); start.ArgumentList.Add("5038");
+        start.ArgumentList.Add("-P"); start.ArgumentList.Add(config.AdbServerPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
         foreach (var arg in args) start.ArgumentList.Add(arg);
         using var process = Process.Start(start) ?? throw new Exception("Could not start ADB");
         var stdout = process.StandardOutput.ReadToEndAsync(ct); var stderr = process.StandardError.ReadToEndAsync(ct);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(config.CommandTimeoutSeconds));
         try { await process.WaitForExitAsync(timeout.Token); }
         catch (OperationCanceledException) { if (!process.HasExited) process.Kill(true); ct.ThrowIfCancellationRequested(); throw new System.TimeoutException("ADB command timed out"); }
         var output = await stdout + "\n" + await stderr;

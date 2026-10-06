@@ -1,240 +1,134 @@
-# TCL TV Wake
+# CEC alternative for PC / Google TV using ADB
 
-C# / .NET 9 приложение для TCL 55C825 (192.168.1.95:5555).
-Windows-служба `TclTvWake` запускается автоматически от LocalSystem до входа пользователя
-и обрабатывает ResumeAutomatic / ResumeSuspend / ResumeCritical при выходе из сна.
+[Русская версия](README.ru.md)
 
-## Изменения активности дисплея
+A Windows C# service that coordinates an Android / Google TV with its use as a PC monitor, using ADB instead of HDMI-CEC. Developed and tested with a TCL 55C825.
 
-Служба отслеживает целевой дисплей в сессии физической консоли. Скрытый
-обработчик получает `WM_DISPLAYCHANGE` и `WM_DEVICECHANGE`, ждёт 400 мс
-для стабилизации конфигурации и читает экраны. Проверка по таймеру раз
-в 3 секунды дополняет уведомления, которые могли быть пропущены.
-Обработчик не показывает окно и не выполняет ADB-команды сам.
+**Code author: ChatGPT (OpenAI).** Sasha2dx provided requirements, hardware access and real-device testing.
 
-- Неактивен → активен: служба запускает прежнюю последовательность
-  пробуждения ТВ и выбора HDMI1, проверяя активность перед выбором входа.
-- Активен → неактивен: проверяет питание ТВ и основную сессию;
-  только Awake / ON и HDMI1 приводят к Home. Перед Home повторно
-  убеждается, что дисплей всё ещё неактивен. Предел действия — 10 секунд.
-- Первое состояние после запуска наблюдения — исходная точка, а не переход.
-  Ошибки чтения не считаются отключением. Неизменившееся состояние
-  не вызывает повторных ADB-команд. Обратное переключение отменяет
-  незавершённое действие, новая команда выполняется после завершения предыдущей.
-- При сне и остановке действия наблюдателя отменяются; после пробуждения
-  исходная точка устанавливается заново. Прежние правила сна и выключения
-  по-прежнему требуют активного дисплея. Исключение для неактивного дисплея
-  применяется только к обнаруженному переходу активен → неактивен.
+## Behavior
 
-Новая сборка находится в `publish-v2`; обновление выполняется командой ниже.
-Для проверки выключить использование ТВ в параметрах экранов Windows,
-когда ТВ показывает HDMI1: ожидается Home. Включить дисплей обратно:
-ожидается HDMI1. Повторить отключение на HDMI2: Home должен быть пропущен.
-В журнале искать `Display transition: active -> inactive` и
-`Display transition: inactive -> active`.
-На 05.10.2026 проверены 17 тестов парсера и переходов, а также скрытое
-окно и резервный таймер в текущей сессии. После обновления установленной службы
-пользователь подтвердил корректную работу: в 18:04:33 обнаружен переход
-активен → неактивен, в 18:04:35 доставлен Home; в 18:04:48 обнаружен переход
-неактивен → активен, в 18:04:53 доставлен HDMI1 intent.
-Предоставленный журнал подтверждает оба этих сценария; отдельной строки
-проверки пропуска Home на HDMI2 при отключении дисплея в этом журнале нет.
+“Active” means the TV participates in the Windows desktop configuration, not that its panel is powered on. All actions target the display and TV input specified in configuration (HDMI1 in the supplied example).
 
-## Версия 2: Home перед сном и выключением
+| Scenario | Action |
+| --- | --- |
+| Service starts, including before user sign-in | If the TV is an active Windows display, connect through ADB, wake it, confirm Awake / ON and select the configured HDMI input. |
+| PC resumes from sleep | Run the same wake-and-select sequence. |
+| Display changes from inactive to active | Wake the TV and select the configured HDMI input. |
+| Display changes from active to inactive | If the TV is Awake / ON and its current main session is the configured input, send Home. Recheck that the display is still inactive before sending. |
+| PC enters sleep | If the display is active and the TV is Awake / ON on the configured input, send Home. Total budget: 1.5 seconds. |
+| PC shuts down or restarts | Perform the same conditional Home action during PRESHUTDOWN, with a 10-second budget. |
+| Service is manually stopped or restarted | Stopping does not send Home. Starting runs the normal startup sequence. |
+| TV shows another input or Google TV Home | Conditional Home is skipped. Startup/resume/activation still select the configured input when the display is active. |
 
-Новая версия проверяет питание ТВ и основную сессию текущего пользователя
-из `dumpsys tv_input`. Только если телевизор Awake / ON и основная сессия
-соответствует входу из `HdmiUri` (HDMI1), отправляет `KEYCODE_HOME`.
-При другом входе, null, неоднозначном или неполном дампе, ошибке ADB действие
-пропускается. Сначала проверяется активность целевого дисплея Windows:
-если ТВ отключён в конфигурации экранов или физически не подключён и Windows
-уже считает его неактивным, ADB-команды не отправляются. Перед самой командой
-Home активность проверяется повторно. При ошибке проверки действие пропускается.
-Если Windows уже отключила дисплей при уходе в сон, Home также будет пропущен.
-После установки исправления 05.10.2026 пользователь проверил оба состояния:
-при неактивном дисплее Suspend пропустил все ADB-команды (17:49:18);
-при активном дисплее переход HDMI1 → Home выполнился примерно за 1,47 секунды
-(17:50:02–17:50:04). После пробуждения ТВ успешно вернулся на HDMI1.
+The TV is never powered off. Home uses `KEYCODE_HOME`; waking uses `KEYCODE_WAKEUP`.
 
-Для выключения и перезагрузки служба принимает `SERVICE_CONTROL_PRESHUTDOWN`
-через нативный SCM handler; общий лимит проверки и Home — 10 секунд.
-Обычная остановка или перезапуск службы Home не отправляет.
-Перед сном обрабатывается Suspend: отменяется незавершённое включение,
-попытка проверки и Home ограничена 1500 мс. После пробуждения включение
-и HDMI1 работают как прежде. Сон не блокируется; при недоступной сети
-Home может не успеть. Проверка входа и отправка команды не атомарны:
-если переключать вход пультом в этот короткий промежуток, результат может измениться.
+The selected input is determined by matching `mainSessionToken` to `sessionToken` in the current user's `dumpsys tv_input` session map and reading that session's `inputId`. Searching the entire dump for an input ID is insufficient because it also lists all available inputs. Unknown, ambiguous or incomplete session data causes Home to be skipped.
 
-Сборка новой версии без перезаписи исходной сборки `publish`:
+Display observation uses a hidden console-session window, `WM_DISPLAYCHANGE` / `WM_DEVICECHANGE`, a 400 ms settling delay and a 3-second fallback check. The first reading establishes a baseline. Repeated unchanged readings do nothing; read errors are not treated as disconnection. Reversing a transition cancels its pending action. Observation resets across sleep/resume.
+
+## Requirements
+
+- Windows x64; administrative rights to install/manage the service.
+- Stable .NET 9 SDK, version 9.0.305 or a newer 9.0 feature band (`global.json`), to build. Published binaries include the runtime.
+- Android SDK Platform-Tools for Windows: `adb.exe`, `AdbWinApi.dll`, `AdbWinUsbApi.dll`.
+- An Android / Google TV that permits authorized network ADB and remains reachable in standby. Enable network standby / quick start if required by your TV.
+- A stable TV network address and HDMI connection to the PC.
+
+This is tested on a TCL 55C825. Other TVs may expose different input URIs or different diagnostic output; configure and verify them before relying on automation.
+
+## Build from source
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Publish.ps1 -OutputDirectory publish-v2
+git clone git@github.com:Sasha2dx/CEC-alternative-for-PC-Google-TV-using-ADB.git
+cd CEC-alternative-for-PC-Google-TV-using-ADB
+dotnet build TCL-ADB-CEC.sln -c Release
 dotnet run --project Tests\Tests.csproj -c Release
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Publish.ps1 -AdbDirectory 'C:\Android\platform-tools' -OutputDirectory publish
 ```
 
-Ручная проверка логики (установленный сервер ADB 5038 должен быть доступен;
-при запуске отдельно требуется авторизованный ключ в `keys` рядом с EXE):
+Replace the Platform-Tools path with yours. `-AdbDirectory` can be omitted when `adb.exe` is in PATH. Publishing creates a self-contained `win-x64` executable, copies configuration and the three ADB files into `publish`. ADB keys and build outputs are ignored by Git. `-ExecutionPolicy Bypass` applies to this PowerShell process only.
+
+## Configure your TV
+
+Edit `publish\appsettings.json` **before installation**. `TclTvWake\appsettings.json` is a working TCL example, not universal settings; customize it before publishing if you want your settings copied automatically.
+
+| Setting | Meaning |
+| --- | --- |
+| `Endpoint` | TV ADB address, including port, such as `192.168.1.95:5555`. |
+| `MonitorId` | Windows monitor ID prefix, such as `MONITOR\XXX9615`; JSON requires doubled backslashes. |
+| `HdmiUri` | Full passthrough URI for the desired TV input. |
+| `AdbPath` | ADB executable path; relative paths resolve from the application directory. Default: `adb/adb.exe`. |
+| `AdbServerPort` | Dedicated local ADB server port. Default: 5038; keep it separate from the usual 5037. |
+| `CommandTimeoutSeconds` | Per-command ADB timeout. Default: 15; Home also has a shorter overall deadline. |
+| `Attempts` | Maximum startup/resume/activation attempts. Default: 12. |
+| `RetrySeconds` | Pause between attempts. Default: 5. |
+| `WakeDelaySeconds` | Delay after waking before checking power. Default: 3. |
+
+Discover the Windows monitor ID:
 
 ```powershell
-.\publish-v2\TclTvWake.exe --home-if-hdmi1
-.\publish-v2\TclTvWake.exe --home-sleep-budget
+.\publish\TclTvWake.exe --list-displays
 ```
 
-Код выхода 0 означает, что команда Home доставлена; 1 — пропуск или ошибку.
-Первая команда имеет лимит 10 секунд, вторая использует лимит сна 1500 мс.
-
-Обновление из PowerShell администратора (текущую службу скрипт остановит,
-обновит и запустит; старт службы включает активный ТВ и выбирает HDMI1):
+Authorize ADB using your own TV address, confirm the prompt with its remote (allow future connections if offered), then select the intended HDMI input with the remote:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Service.ps1 -PublishDirectory publish-v2
+adb connect 192.168.1.95:5555
+adb -s 192.168.1.95:5555 shell dumpsys tv_input
 ```
 
-Возврат к сохранённой первой сборке:
+Find the current main session's `inputId`. URL-encode that ID and append it to `content://android.media.tv/passthrough/` to obtain `HdmiUri`. The supplied configuration contains the tested TCL HDMI1 URI. Address, monitor ID and input URI are required in configuration; production C# code has no TV-specific fallback values.
+
+## Install and run
+
+From an **administrator PowerShell**, in the repository directory:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-Service.ps1 -PublishDirectory publish
 ```
 
-Первая версия исходников сохранена в коммите `6e32af7`. Не перезаписывайте
-папку `publish`, если используете её для быстрого возврата.
-На 05.10.2026 проверены тесты парсера, переход HDMI1 → Home и пропуск
-на Home / после выбора HDMI2. После обновления службы пользователь подтвердил
-переход HDMI1 → Home перед сном (две проверки) и выключением компьютера.
-Журнал подтверждает выполнение Home за 1,2–1,3 секунды при Suspend и
-примерно за 1,3 секунды при Preshutdown/shutdown. После пробуждения и следующего
-старта служба успешно включила ТВ и вернула HDMI1; временные ошибки ADB
-обработаны повторными попытками.
-Также подтверждён пропуск Home на HDMI2 при уходе в сон: в 17:37:04
-служба определила основную сессию HW1413744384 и записала `Home skipped`.
-После пробуждения успешно вернула HDMI1. Отдельная проверка выключения
-компьютера на HDMI2 пока не выполнялась. Лимит 1500 мс перед сном остаётся:
-успешные проверки не гарантируют выполнение при задержке сети или ADB.
+The script copies the application to `%ProgramFiles%\TclTvWake`, installs/updates the automatic `TclTvWake` LocalSystem service, configures recovery and starts it immediately. Starting may wake the TV and select the configured input.
 
-Проверка после обновления: с HDMI1 перевести компьютер в сон — ТВ должен
-перейти на Home; после пробуждения — обратно на HDMI1. Затем повторить
-с HDMI2: перед сном служба должна пропустить Home (после пробуждения
-прежняя логика включения всё равно выбирает HDMI1). Для выключения
-проверить аналогично HDMI1 и HDMI2. В журнале искать `Suspend`,
-`Preshutdown/shutdown`, `Home command delivered` или `Home skipped`.
+It copies the authorized private ADB key from `%USERPROFILE%\.android\adbkey`. If using a different administrator account, pass `-AdbKey 'C:\Users\YourUser\.android\adbkey'`. Never commit or share the private key. The service's key may need a one-time confirmation on the TV. Application/key and data directories are restricted to SYSTEM and administrators.
 
-## Поведение
+Session 0 cannot reliably inspect the physical console's displays. The service therefore launches short-lived, invisible helpers using the console session's SYSTEM winlogon token. No user password or startup shortcut is needed.
 
-При запуске службы и выходе из сна приложение проверяет, включён ли телевизор
-в конфигурацию рабочего стола Windows. Использует EnumDisplayDevices:
-адаптер должен быть ATTACHED_TO_DESKTOP, монитор — ACTIVE.
-У этого компьютера телевизор соответствует `MONITOR\XXX9615` (WMI имя Beyond TV).
-Сопоставление не зависит от номера DISPLAY1, который Windows может изменить.
-Флаг Active означает использование экрана Windows, а не физическое состояние панели.
-
-Если телевизор активен, выполняются:
-
-1. `adb -P 5038 connect 192.168.1.95:5555`
-2. `adb -P 5038 -s 192.168.1.95:5555 shell input keyevent KEYCODE_WAKEUP`
-3. Ожидание 3 секунд и проверка `dumpsys power`: Awake и ON.
-4. Повторная проверка активности дисплея и отправка HDMI1 intent.
-
-Если монитор отключён в параметрах Windows, ADB-команды не отправляются.
-При отсутствии дисплея, сети или готового ADB выполняются до 12 попыток
-с паузами 5 секунд. Каждая ADB-команда ограничена 15 секундами.
-ТВ не выключается; наблюдение за дисплеями описано выше.
-Телевизор должен сохранять доступность ADB в режиме ожидания.
-
-Служба работает в session 0. Для проверки экранов она запускает свой короткий
-`--probe` процесс в сессии физической консоли с SYSTEM-токеном winlogon.
-Процесс не показывает окна и завершается после записи результата.
-Это позволяет проверять конфигурацию до входа пользователя без его пароля.
-При ошибке проверки приложение ничего не включает и пишет причину в журнал.
-
-## Сборка и установка
-
-Сборка из этой папки (SDK 9.0.305 или более новый стабильный SDK 9):
+After installation, edit `%ProgramFiles%\TclTvWake\appsettings.json` from an elevated editor and restart the service. Updating from a publish folder replaces the installed settings, so preserve custom settings in that folder first.
 
 ```powershell
-.\Publish.ps1
-```
-
-Получится автономная сборка win-x64 в `publish`; отдельная установка .NET
-на целевом компьютере не нужна. Скрипт копирует ADB и две DLL из
-`W:\Workspace\Tools\platform-tools`. Другую папку можно передать в `-AdbDirectory`.
-
-Затем открыть PowerShell **от имени администратора** и выполнить:
-
-```powershell
-Set-Location 'W:\Workspace\Projects\TCL-ADB-CEC'
-.\Install-Service.ps1
-```
-
-Скрипт копирует приложение в `C:\Program Files\TclTvWake`, создаёт службу
-с автоматическим стартом и сразу запускает её. Копирует приватный ключ
-`$env:USERPROFILE\.android\adbkey`, уже авторизованный телевизором.
-При запуске под другим администратором передайте
-`-AdbKey 'C:\Users\sasha\.android\adbkey'`.
-Ключ не выводится в журнал и не включается в репозиторий.
-Каталоги приложения и данных доступны только SYSTEM и администраторам.
-ADB использует отдельный сервер на локальном порту 5038, чтобы служба не
-конфликтовала с пользовательским сервером на порту 5037.
-Порт 5038 следует оставить свободным для этого приложения.
-
-## Настройки и диагностика
-
-Настройки после установки: `C:\Program Files\TclTvWake\appsettings.json`.
-После их изменения выполнить `Restart-Service TclTvWake` из повышенного PowerShell.
-Исходные настройки: `TclTvWake/appsettings.json`.
-
-```powershell
-.\publish\TclTvWake.exe --list-displays
 Get-Service TclTvWake
-Get-Content 'C:\ProgramData\TclTvWake\service.log' -Tail 30
 Restart-Service TclTvWake
+Get-Content "$env:ProgramData\TclTvWake\service.log" -Tail 30
 ```
 
-Журнал ограничен примерно 2 МБ плюс один предыдущий файл.
-Режим `--once` проверяет дисплеи и выполняет один цикл попыток; возвращает 0
-при успешной доставке HDMI1 intent, иначе 1. Для ручного запуска нужны ADB
-в папке `adb` и авторизованный ключ в папке `keys` рядом с EXE.
-Установленный EXE можно запустить в этом режиме из повышенного PowerShell.
-Предупреждение `Activity not started ... brought to the front` само по себе
-не означает ошибку, если телевизор уже Awake / ON.
+Manual commands (from an elevated shell for the installed application):
 
-## Проверка после установки
+```powershell
+& "$env:ProgramFiles\TclTvWake\TclTvWake.exe" --once
+& "$env:ProgramFiles\TclTvWake\TclTvWake.exe" --home-if-hdmi1
+& "$env:ProgramFiles\TclTvWake\TclTvWake.exe" --home-sleep-budget
+```
 
-1. Проверить журнал после установки: `TV awake; HDMI1 intent delivered`.
-2. Отключить телевизор как дисплей в параметрах Windows и перезапустить службу:
-   журнал должен сообщить `TV is not an active Windows display`, телевизор не должен включаться.
-3. Включить его обратно в конфигурацию дисплеев.
-4. Перевести ТВ в режим ожидания, компьютер — в сон, затем разбудить компьютер:
-   ТВ должен включиться и выбрать HDMI1, в журнале должен появиться `Resume`.
-5. Перезагрузить компьютер с ТВ в ожидании и проверить включение на экране входа.
+`--once` runs the wake/input sequence. The Home commands require an active Windows display, with 10-second and 1.5-second deadlines respectively. Exit code 0 means the action succeeded; 1 means skipped/failed. For manual use of a published copy, place an authorized `adbkey` in its `keys` directory unless its dedicated ADB server is already running with that key. `--service` is for Service Control Manager; `--probe` and `--watch-change` are internal helper modes.
 
-Сборка, распознавание реальных дисплеев, ручной цикл с активным ТВ и отказ
-от отправки команд для несовпадающего монитора проверены при разработке.
-После установки 04.10.2026 на этом компьютере проверены по журналу службы
-и наблюдениям пользователя:
+## Verification and limitations
 
-- Перезапуск службы: телевизор включается из ожидания и выбирает HDMI1.
-- Отключение ТВ в конфигурации дисплеев Windows: все 12 попыток пропускают
-  ADB-команды с сообщением `TV is not an active Windows display`.
-- Выход из сна: событие `ResumeAutomatic` обработано; после временных ошибок
-  `closed` и `device offline` ТВ включился и выбрал HDMI1 примерно за 27 секунд.
-- Перезагрузка: телевизор включился и выбрал HDMI1 до входа пользователя.
-  В последнем тесте от `Service startup` до успеха прошло примерно 19 секунд;
-  первые две попытки получили `device not found`.
+Test startup before sign-in, sleep/resume, shutdown, both display transitions, inactive-display protection, and skipping Home when another input is selected. Those core scenarios were exercised on the TCL setup; separate shutdown-on-HDMI2 and display-deactivation-on-HDMI2 checks are not recorded in the provided test logs. Automated tests cover input parsing, transition tracking and configuration validation.
 
-При первой установке телевизор запросил разрешение ADB, пользователь подтвердил
-его с пульта. Последующие проверенные запуски прошли без `unauthorized`.
-Повторные попытки покрывают временную недоступность ADB при восстановлении
-после сна и загрузке; журнал не определяет, какая часть задержки приходится
-на сеть компьютера, а какая — на телевизор и ADB.
+- Sleep networking can disappear before the 1.5-second Home attempt finishes. Timeouts/errors skip the action; sleep is not vetoed. Added display checks have completed close to the deadline in real tests.
+- Network/ADB recovery can delay wake/input selection. Bounded retries handle `offline`, closed connections and temporary unavailability.
+- Windows may already mark a display inactive during sleep/shutdown, in which case Home is skipped. Physical connection is inferred from Windows display state, which can lag behind cable removal.
+- Input checking and command delivery are not atomic; using the TV remote during the check can race the action.
+- `Activity not started ... brought to the front` can be normal when the TV activity is already running. Confirm power and the delivered intent in the log.
+- The log is `%ProgramData%\TclTvWake\service.log`, approximately 2 MB plus one rotated file, readable by administrators.
 
-## Удаление
+## Update, rollback and uninstall
 
-Из повышенного PowerShell: `.\Uninstall-Service.ps1`.
-Удаляет службу и останавливает её отдельный ADB-сервер.
-Файлы, ключ и журнал сохраняются для восстановления.
+Publish to another folder (for example `-OutputDirectory publish-v2`) and install it with `-PublishDirectory publish-v2`. Keep a known-good published folder for rollback, then install that folder to revert. Git history also preserves the earlier versions.
 
-Документация Windows:
-[EnumDisplayDevices](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumdisplaydevicesw),
-[DISPLAY_DEVICE](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-display_devicew),
-[CreateProcessAsUser](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw),
-[PowerBroadcastStatus](https://learn.microsoft.com/en-us/dotnet/api/system.serviceprocess.powerbroadcaststatus).
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-Service.ps1
+```
+
+Run uninstall as administrator. It removes the service and stops its configured ADB server. Application files, configuration, keys and logs remain for recovery.

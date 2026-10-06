@@ -10,11 +10,13 @@ $existing = Get-Service TclTvWake -ErrorAction SilentlyContinue
 if ($existing -and $existing.Status -ne 'Stopped') { Stop-Service TclTvWake; $existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) }
 $installedAdb = Join-Path $target 'adb\adb.exe'
 if (Test-Path -LiteralPath $installedAdb) {
+    $installedConfig = Get-Content -LiteralPath (Join-Path $target 'appsettings.json') -Raw | ConvertFrom-Json
+    $installedPort = if ($installedConfig.AdbServerPort) { $installedConfig.AdbServerPort } else { 5038 }
     # An absent server is normal during a repeated installation attempt.
     $cleanupPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        & $installedAdb -P 5038 kill-server 2>&1 | ForEach-Object { Write-Host "ADB cleanup: $_" }
+        & $installedAdb -P $installedPort kill-server 2>&1 | ForEach-Object { Write-Host "ADB cleanup: $_" }
     } finally { $ErrorActionPreference = $cleanupPreference }
 }
 New-Item $target -ItemType Directory -Force | Out-Null

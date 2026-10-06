@@ -31,3 +31,12 @@ Check(transitions.Observe(false), false, "Deactivation detected");
 Check(transitions.Observe(true), true, "Rapid reversal detected");
 transitions.Reset();
 Check(transitions.Observe(false), null, "Sleep/resume reset suppresses stale transition");
+var missingHardware = new Config();
+try { missingHardware.Validate(); throw new Exception("Missing hardware settings were accepted"); }
+catch (InvalidOperationException) { Console.WriteLine("PASS Hardware configuration is required"); }
+var configured = new Config { Endpoint = "192.0.2.10:5555", MonitorId = @"MONITOR\TEST123", HdmiUri = "content://android.media.tv/passthrough/example%2Finput", AdbServerPort = 5040 };
+configured.Validate();
+Console.WriteLine("PASS Custom hardware and server port accepted");
+configured.AdbServerPort = 0;
+try { configured.Validate(); throw new Exception("Invalid server port was accepted"); }
+catch (InvalidOperationException) { Console.WriteLine("PASS Invalid ADB server port rejected"); }
